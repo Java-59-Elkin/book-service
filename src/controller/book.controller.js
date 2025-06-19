@@ -1,43 +1,58 @@
-import {sequelize} from "../config/database.js";
-import {Author, Book, Publisher} from "../model/index.js";
+import { sequelize } from "../config/database.js";
+import { Book, Author, Publisher } from "../model/index.js";
 
 export const addBook = async (req, res) => {
     const t = await sequelize.transaction();
     try {
-        const {isbn, title, publisher, authors} = req.body;
-        const existingBook = await Book.findByPk(isbn);
+        const { isbn, title, publisher, authors } = req.body;
+
+        // Проверка на дублирование книги
+        const existingBook = await Book.findByPk(isbn, { transaction: t });
         if (existingBook) {
             await t.rollback();
             return res.status(409).json({
                 error: `Book with ISBN ${isbn} already exists`
-            })
+            });
         }
-        // Create or find the publisher
+
+        // Найти или создать издателя
         let publisherRecord = await Publisher.findByPk(publisher);
         if (!publisherRecord) {
-            publisherRecord = await Publisher.create({publisherName: publisher}, {transaction: t});
+            publisherRecord = await Publisher.create(
+                { publisherName: publisher },
+                { transaction: t }
+            );
         }
-        console.log(publisherRecord)
-        // Process authors
+
+        // Найти или создать авторов
         const authorRecords = [];
         for (const author of authors) {
-            let authorRecord = await Author.findByPk(author.name);
-            if (!authorRecord) {
-                authorRecord = await Author.create({name: author.name, birthDate: new Date(author.birthDate)}, {transaction: t});
-            }
+            const [authorRecord] = await Author.findOrCreate({
+                where: { name: author.name },
+                defaults: { birthDate: author.birthDate },
+                transaction: t
+            });
             authorRecords.push(authorRecord);
         }
-        console.log(authorRecords)
-        // Create the book
-        const book =
-            await Book.create({isbn, title, publisher: publisherRecord, authors: authorRecords}, {transaction: t});
+
+        // Создание книги (без publisher)
+        const book = await Book.create(
+            { isbn, title },
+            { transaction: t }
+        );
+
+        // Привязка publisher через ассоциацию
+        await book.setPublisherDetails(publisherRecord, { transaction: t });
+
+        // Привязка авторов
+        await book.setAuthors(authorRecords, { transaction: t });
+
         await t.commit();
-        return res.json(book);
+        return res.status(201).json({ message: 'Book added successfully', book });
+
     } catch (e) {
         await t.rollback();
         console.error('Error adding book:', e);
-        return res.status(500).json({
-            error: 'Failed to add book'
-        })
+        return res.status(500).json({ error: 'Failed to add book' });
     }
-}
+};
