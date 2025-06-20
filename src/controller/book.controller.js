@@ -140,17 +140,41 @@ export const updateBookTitle = async (req, res) => {
 export const findBooksByAuthor = async (req, res) => {
     try {
         const {author} = req.params;
-        const books = await Book.findAll({
+        // const books = await Book.findAll({
+        //     include: [
+        //         {
+        //             model: Author, as: 'authors',
+        //             where: {name: author},
+        //             through: {attributes: []}
+        //             }
+        //         ]
+        // });
+        // return res.json(books);
+        const authorRecord = await Author.findByPk(author);
+        if (!authorRecord) {
+            return res.status(404).json({error: "Author not found"});
+        }
+        const books = await authorRecord.getBooks({
             include: [
-                {
-                    model: Author, as: 'authors',
-                    where: {name: author},
-                    through: {attributes: []}}]
-        });
-        return res.json(books);
+                {model: Author, as: 'authors', through: {attributes:
+                            []}}
+            ],
+        })
+        const response = books.map(book => ({
+                isbn: book.isbn,
+                title: book.title,
+                publisher: book.publisher,
+                authors: book.authors.map(author => ({
+                    name: author.name,
+                    birthDate: author.birthDate
+                }))
+            }
+        ))
+        return res.json(response);
     } catch (e) {
         console.error('Error finding books by author', e);
-        return res.status(500).json({error: 'Failed to find books by author'
+        return res.status(500).json({
+            error: 'Failed to find books by author'
         })
     }
 }
