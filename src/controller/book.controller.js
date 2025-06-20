@@ -1,58 +1,177 @@
-import { sequelize } from "../config/database.js";
-import { Book, Author, Publisher } from "../model/index.js";
+import {sequelize} from "../config/database.js";
+import {Author, Book, Publisher} from "../model/index.js";
+import {where} from "sequelize";
 
 export const addBook = async (req, res) => {
     const t = await sequelize.transaction();
     try {
-        const { isbn, title, publisher, authors } = req.body;
-
-        // Проверка на дублирование книги
-        const existingBook = await Book.findByPk(isbn, { transaction: t });
+        const {isbn, title, publisher, authors} = req.body;
+        const existingBook = await Book.findByPk(isbn);
         if (existingBook) {
             await t.rollback();
             return res.status(409).json({
                 error: `Book with ISBN ${isbn} already exists`
-            });
+            })
         }
-
-        // Найти или создать издателя
+        // Create or find the publisher
         let publisherRecord = await Publisher.findByPk(publisher);
         if (!publisherRecord) {
-            publisherRecord = await Publisher.create(
-                { publisherName: publisher },
-                { transaction: t }
-            );
+            publisherRecord = await Publisher.create({publisherName: publisher}, {transaction: t});
         }
-
-        // Найти или создать авторов
+        // Process authors
         const authorRecords = [];
         for (const author of authors) {
-            const [authorRecord] = await Author.findOrCreate({
-                where: { name: author.name },
-                defaults: { birthDate: author.birthDate },
-                transaction: t
-            });
+            let authorRecord = await Author.findByPk(author.name);
+            if (!authorRecord) {
+                authorRecord = await Author.create({
+                    name: author.name,
+                    birthDate: new Date(author.birthDate)
+                }, {transaction: t});
+            }
             authorRecords.push(authorRecord);
         }
+        // Create the book without association
+        const book = await Book.create({isbn, title, publisher}, {transaction: t});
 
-        // Создание книги (без publisher)
-        const book = await Book.create(
-            { isbn, title },
-            { transaction: t }
-        );
-
-        // Привязка publisher через ассоциацию
-        await book.setPublisherDetails(publisherRecord, { transaction: t });
-
-        // Привязка авторов
-        await book.setAuthors(authorRecords, { transaction: t });
+        // Associate authors
+        await book.setAuthors(authorRecords, {transaction: t});
 
         await t.commit();
-        return res.status(201).json({ message: 'Book added successfully', book });
-
+        return res.sendStatus(201);
     } catch (e) {
         await t.rollback();
         console.error('Error adding book:', e);
-        return res.status(500).json({ error: 'Failed to add book' });
+        return res.status(500).json({
+            error: 'Failed to add book'
+        })
     }
-};
+}
+
+export const findBookByIsbn = async (req, res) => {
+    try {
+        const {isbn} = req.params;
+        console.log(isbn);
+        const book = await Book.findByPk(isbn, {
+            include: [
+                {model: Author, as: 'authors'}
+            ]
+        });
+        if (book) {
+            const response = {
+                isbn: book.isbn,
+                title: book.title,
+                publisher: book.publisher,
+                authors: book.authors.map(author => ({
+                    name: author.name,
+                    birthDate: author.birthDate
+                }))
+            }
+            return res.json(response);
+        } else {
+            return res.status(404).json({
+                error: `Book with ISBN ${isbn} not found`
+            });
+        }
+    } catch (e) {
+        console.log('Error finding book by ISBN', e);
+        return res.status(500).json({
+            error: 'Failed to find a book'
+        })
+    }
+}
+
+export const removeBook = async (req, res) => {
+    const t = await sequelize.transaction();
+    try {
+        const {isbn} = req.params;
+        const book = await Book.findByPk(isbn, {
+            include: [
+                {model: Author, as: 'authors', through: {attributes: []}}
+            ],
+            transaction: t
+        });
+        if (!book) {
+            return res.status(404).json({
+                error: `Book with ISBN ${isbn} not exist`,
+            })
+        }
+        await book.destroy({transaction: t});
+        await t.commit();
+        return res.json(book);
+    } catch (e) {
+        await t.rollback();
+        console.error('Error', e);
+        return res.status(500).json({
+            error: 'Failed'
+        })
+
+    }
+}
+
+export const updateBookTitle = async (req, res) => {
+    const t = await sequelize.transaction();
+    try {
+        const {isbn, title} = req.params;
+        const book = await Book.findByPk(isbn, {
+            include: [
+                {model: Author, as: 'authors', through: {attributes: []}}
+            ],
+            transaction: t
+        });
+        if (!book) {
+            return res.status(404).json({
+                error: `Book with ISBN ${isbn} not exist`,
+            })
+        }
+        book.title = title;
+        await book.save({transaction: t});
+        await t.commit();
+        return res.json(book);
+    } catch (e) {
+        await t.rollback();
+        console.error('Error updating book', e);
+        return res.status(500).json({
+            error: 'Failed to update book'
+        })
+    }
+}
+
+// TODO Another method. Take from Edd repository
+export const findBooksByAuthor = async (req, res) => {
+    try {
+        const {author} = req.params;
+        const books = await Book.findAll({
+            include: [
+                {
+                    model: Author, as: 'authors',
+                    where: {name: author},
+                    through: {attributes: []}}]
+        });
+        return res.json(books);
+    } catch (e) {
+        console.error('Error finding books by author', e);
+        return res.status(500).json({error: 'Failed to find books by author'
+        })
+    }
+}
+
+export const findBooksByPublisher = async (req, res) => {
+    try {
+        const {publisher} = req.params;
+        if (!(await Publisher.findByPk(publisher))) {
+            return res.status(404).json({error: "Publisher not found"});
+        }
+        const books = await Book.findAll({
+            where: {publisher},
+            include: [
+                {
+                    model: Author, as: 'authors',
+                    through: {attributes: []}}]
+        });
+        return res.json(books);
+    } catch (e) {
+        console.error('Error finding books by publisher', e);
+        return res.status(500).json({error: 'Failed to find books by publisher'
+        })
+    }
+}
